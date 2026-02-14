@@ -1,4 +1,4 @@
-// Crumb_C: ESP-NOW relay — receive from B, forward to D.
+// Crumb_B: ESP-NOW relay — receive from A, forward to C.
 // Chain: A -> B -> C -> D. Same payload layout; increments hop_count on forward.
 
 #include <esp_now.h>
@@ -6,8 +6,8 @@
 #include <esp_wifi.h>
 #include <string.h>
 
-// Crumb_D MAC (from hardware/MACs.md)
-uint8_t crumbD_Mac[] = {0xE4, 0x65, 0xB8, 0x80, 0x08, 0xC4};
+// Crumb_C MAC (from hardware/MACs.md)
+uint8_t crumbC_Mac[] = {0x98, 0xF4, 0xAB, 0x6F, 0xFC, 0x80};
 
 #define LED_PIN 2
 #define ESP_NOW_CHANNEL 6
@@ -87,15 +87,15 @@ void setup() {
   esp_now_register_recv_cb(OnDataRecv);
   esp_now_register_send_cb(OnDataSent);
 
-  memcpy(peerInfo.peer_addr, crumbD_Mac, 6);
+  memcpy(peerInfo.peer_addr, crumbC_Mac, 6);
   peerInfo.channel = ESP_NOW_CHANNEL;
   peerInfo.encrypt = false;
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer (Crumb_D)");
+    Serial.println("Failed to add peer (Crumb_C)");
     return;
   }
 
-  Serial.println("Crumb_C: listening for B, forwarding to D");
+  Serial.println("Crumb_B: listening for A, forwarding to C");
 }
 
 void loop() {
@@ -118,7 +118,7 @@ void loop() {
     memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &m->delay_ms, 4);
 
     for (int r = 0; r < 3; r++) {
-      esp_err_t result = esp_now_send(crumbD_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
+      esp_err_t result = esp_now_send(crumbC_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
       if (result != ESP_OK) {
         Serial.println("esp_now_send error");
       }

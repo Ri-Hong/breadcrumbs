@@ -1,68 +1,105 @@
-// Crumb: Hall sensor → LED flash + buzzer when magnet detected
+// Crumb_A: Origin sender — sends one ESP-NOW message to Crumb_B every 10 seconds.
+// Chain: A -> B -> C -> D (D relays to API).
 
-#define HALL_ADC 34
-#define LED_PIN 14
-#define BUZZER_PIN 25
+#include <esp_now.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
+#include <string.h>
 
-// Magnet detection threshold (volts from midpoint ~1.65V)
-#define MAGNET_THRESHOLD_V 0.10f
+// Crumb_B MAC (from hardware/MACs.md)
+uint8_t crumbB_Mac[] = {0x24, 0x0A, 0xC4, 0xAE, 0x97, 0xA8};
 
-#define FLASH_MS 80
-#define PAUSE_MS 80
+#define LED_PIN 2
 
-float adcToVolts(int adc) {
-  return (adc / 4095.0f) * 3.3f;
-}
+#define ESP_NOW_CHANNEL 6
 
-// Returns true if magnet is still detected (above threshold)
-bool readHallAboveThreshold() {
-  long sum = 0;
-  const int N = 16;
-  for (int i = 0; i < N; i++) {
-    sum += analogRead(HALL_ADC);
-    delayMicroseconds(200);
+#define MSG_ID_LEN   24
+#define CRUMB_ID_LEN 8
+#define TYPE_LEN     8
+#define MESSAGE_LEN  64
+#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)
+
+#define SEND_DELAY_MS 1000
+
+uint8_t outgoingBuf[CRUMB_PAYLOAD_LEN];
+esp_now_peer_info_t peerInfo;
+
+static uint32_t messageCounter = 0;
+
+void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    Serial.println("Send OK");
+  } else {
+    Serial.println("Send FAIL (set ESP_NOW_CHANNEL to your WiFi AP channel)");
   }
-  float v = adcToVolts(sum / N);
-  float delta = v - 1.65f;
-  return fabs(delta) > MAGNET_THRESHOLD_V;
 }
 
 void setup() {
   Serial.begin(115200);
-
   pinMode(LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
-  digitalWrite(BUZZER_PIN, LOW);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
 
-  analogReadResolution(12);
-  analogSetPinAttenuation(HALL_ADC, ADC_11db);
+  esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  esp_now_register_send_cb(OnDataSent);
+
+  memcpy(peerInfo.peer_addr, crumbB_Mac, 6);
+  peerInfo.channel = ESP_NOW_CHANNEL;
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer (Crumb_B)");
+    return;
+  }
+
+  Serial.print("Crumb_A: sending ");
+  Serial.print(CRUMB_PAYLOAD_LEN);
+  Serial.println(" bytes to Crumb_B every 10s");
 }
 
 void loop() {
-  // Average samples to reduce noise
-  long sum = 0;
-  const int N = 32;
-  for (int i = 0; i < N; i++) {
-    sum += analogRead(HALL_ADC);
-    delayMicroseconds(200);
-  }
-  int adc = sum / N;
-  float v = adcToVolts(adc);
-  float delta = v - 1.65f;
+  messageCounter++;
 
-  if (fabs(delta) > MAGNET_THRESHOLD_V) {
-    Serial.println("Magnet detected — flash + beep until magnet removed");
-    while (readHallAboveThreshold()) {
-      digitalWrite(LED_PIN, HIGH);
-      digitalWrite(BUZZER_PIN, HIGH);
-      delay(FLASH_MS);
-      digitalWrite(LED_PIN, LOW);
-      digitalWrite(BUZZER_PIN, LOW);
-      delay(PAUSE_MS);
+  char msgId[MSG_ID_LEN];
+  char cid[CRUMB_ID_LEN];
+  char typ[TYPE_LEN];
+  char msg[MESSAGE_LEN];
+  snprintf(msgId, sizeof(msgId), "A1-%lu", (unsigned long)messageCounter);
+  snprintf(cid, sizeof(cid), "A1");
+  snprintf(typ, sizeof(typ), "MSG");
+  snprintf(msg, sizeof(msg), "Test from Crumb_A #%lu", (unsigned long)messageCounter);
+
+  memset(outgoingBuf, 0, CRUMB_PAYLOAD_LEN);
+  size_t n;
+  n = strlen(msgId) + 1; if (n > MSG_ID_LEN) n = MSG_ID_LEN; memcpy(outgoingBuf, msgId, n);
+  n = strlen(cid) + 1;   if (n > CRUMB_ID_LEN) n = CRUMB_ID_LEN; memcpy(outgoingBuf + MSG_ID_LEN, cid, n);
+  n = strlen(typ) + 1;   if (n > TYPE_LEN) n = TYPE_LEN; memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN, typ, n);
+  n = strlen(msg) + 1;   if (n > MESSAGE_LEN) n = MESSAGE_LEN; memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, msg, n);
+  int32_t hc = 1;
+  memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hc, 4);
+  uint32_t delayMs = SEND_DELAY_MS;
+  memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &delayMs, 4);
+
+  Serial.print("Sending id=");
+  Serial.println(msgId);
+
+  for (int r = 0; r < 3; r++) {
+    esp_err_t result = esp_now_send(crumbB_Mac, outgoingBuf, CRUMB_PAYLOAD_LEN);
+    if (result != ESP_OK) {
+      Serial.println("esp_now_send error");
     }
-    Serial.println("Magnet removed — stopping");
+    if (r < 2) delay(80);
   }
 
-  delay(50);
+  digitalWrite(LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(LED_PIN, LOW);
+
+  delay(10000);
 }

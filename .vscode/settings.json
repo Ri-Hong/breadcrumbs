@@ -1,5 +1,13 @@
 {
     "files.associations": {
-        "print": "cpp"
+        "print": "cpp",
+        "__hash_table": "cpp",
+        "__tree": "cpp",
+        "array": "cpp",
+        "complex": "cpp",
+        "type_traits": "cpp",
+        "limits": "cpp",
+        "ratio": "cpp",
+        "variant": "cpp"
     }
 }
