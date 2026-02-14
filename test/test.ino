@@ -1,18 +1,18 @@
-#define BUZZER_PIN 25
-#define LED_PIN 2
+#include <WiFi.h>
 
 void setup() {
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(LED_PIN, OUTPUT);
+  Serial.begin(115200);
+  delay(200);
+
+  WiFi.mode(WIFI_STA);   // put ESP32 into Station mode
+  WiFi.begin();          // start WiFi (no network connection needed for MAC)
+
+  Serial.print("ESP32 MAC Address: ");
+  Serial.println(WiFi.macAddress());
 }
 
 void loop() {
-  digitalWrite(BUZZER_PIN, HIGH);  // turn buzzer ON
-  digitalWrite(LED_PIN, HIGH);  // turn buzzer ON
-
-  delay(300);
-
-  digitalWrite(BUZZER_PIN, LOW);   // OFF
-  digitalWrite(LED_PIN, LOW);   // OFF
-  delay(300);
+  delay(200);
+  Serial.print("ESP32 MAC Address: ");
+  Serial.println(WiFi.macAddress());  
 }
