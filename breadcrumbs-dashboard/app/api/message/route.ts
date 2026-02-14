@@ -20,7 +20,15 @@ export async function POST(request: Request) {
     );
   }
 
+  const id = body.id != null ? String(body.id).trim() : undefined;
+
+  // Dedupe: if sender sent same id (e.g. retries), only store once
+  if (id && messages.some((m) => m.id === id)) {
+    return Response.json({ status: "ok" } satisfies OkResp);
+  }
+
   const entry: BreadcrumbMessage = {
+    ...(id && { id }),
     crumb_id: String(body.crumb_id),
     type: body.type ? String(body.type) : "MSG",
     message: String(body.message),

@@ -11,4 +11,8 @@ void setup() {
   Serial.println(WiFi.macAddress());
 }
 
-void loop() {}
+void loop() {  
+  Serial.print("ESP32 MAC Address: ");
+  Serial.println(WiFi.macAddress());
+  delay(1000);
+}
