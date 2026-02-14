@@ -2,8 +2,9 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
-const char* ssid = "Ri’s iPhone";
-const char* password = "riri1234";
+#include "secrets.h"
+
+// WiFi credentials from secrets.h (copy secrets.h.example → secrets.h)
 
 const char* serverURL =
   "https://breadcrumbs-phi.vercel.app/api/message";
@@ -11,12 +12,18 @@ const char* serverURL =
 void setup() {
   Serial.begin(115200);
 
-  WiFi.begin(ssid, password);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting");
 
+  const unsigned long timeoutMs = 20000;  // 20 s
+  unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    if (millis() - start > timeoutMs) {
+      Serial.println("\nWiFi timeout. Check SSID, password, and that the hotspot is on.");
+      for (;;) delay(1000);  // stop here
+    }
   }
 
   Serial.println("\nWiFi connected!");
@@ -50,7 +57,6 @@ void sendMessage(String id, String msg, int hops) {
 }
 
 void loop() {
-  Serial.print("Sending msg");
   sendMessage("C7", "SOS: Help needed!", 5);
   delay(5000);
 }
