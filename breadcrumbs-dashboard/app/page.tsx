@@ -73,7 +73,10 @@ export default function Home() {
                 <small style={{ color: "#555" }}>{m.receivedAt ?? ""}</small>
               </div>
               <p style={{ marginBottom: 8, color: "#1a1a1a" }}>{m.message}</p>
-              <small style={{ color: "#555" }}>Hop count: {m.hop_count ?? "-"}</small>
+              <small style={{ color: "#555" }}>
+                Hop count: {m.hop_count ?? "-"}
+                {m.delay_ms != null && m.delay_ms > 0 && ` · Delay: ${m.delay_ms} ms`}
+              </small>
             </div>
           ))
         )}

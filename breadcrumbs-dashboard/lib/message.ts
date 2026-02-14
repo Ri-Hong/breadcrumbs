@@ -4,5 +4,6 @@ export type BreadcrumbMessage = {
   type?: string; // e.g., "SOS" | "MSG"
   message: string;
   hop_count?: number;
+  delay_ms?: number; // delay applied by crumb before relaying (ms)
   receivedAt?: string; // server adds this
 };

@@ -34,6 +34,8 @@ export async function POST(request: Request) {
     message: String(body.message),
     hop_count:
       body.hop_count !== undefined ? Number(body.hop_count) : undefined,
+    delay_ms:
+      body.delay_ms !== undefined ? Number(body.delay_ms) : undefined,
     receivedAt: new Date().toISOString(),
   };
 

@@ -15,12 +15,12 @@
 // Must match Crumb_C and your WiFi AP's channel (router/hotspot). Many APs use 6 or 11; try 6 first.
 #define ESP_NOW_CHANNEL 6
 
-// Fixed layout: parse by offset so we don't depend on struct padding (must match Crumb_C send order)
+// Fixed layout: parse by offset (must match sender order). +4 hop_count, +4 delay_ms
 #define MSG_ID_LEN   24
 #define CRUMB_ID_LEN 8
 #define TYPE_LEN     8
 #define MESSAGE_LEN  64
-#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4)  // +4 for hop_count
+#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)  // hop_count, delay_ms
 
 const char* serverURL = "https://breadcrumbs-phi.vercel.app/api/message";
 
@@ -32,6 +32,7 @@ struct pending {
   char type[TYPE_LEN + 1];
   char message[MESSAGE_LEN + 1];
   int hop_count;
+  uint32_t delay_ms;
 };
 static struct pending pendingQueue[PENDING_QUEUE_LEN];
 static volatile int pendingHead = 0;  // callback writes here
@@ -57,7 +58,7 @@ static bool connectWiFiAtBoot() {
 
 // Same contract as https.ino: POST JSON to serverURL
 void sendMessageToAPI(const char* id, const char* crumb_id, const char* type,
-                      const char* message, int hop_count) {
+                      const char* message, int hop_count, uint32_t delay_ms) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected, skip relay.");
     return;
@@ -83,7 +84,8 @@ void sendMessageToAPI(const char* id, const char* crumb_id, const char* type,
     "\"crumb_id\":\"" + String(crumb_id) + "\","
     "\"type\":\"" + String(type) + "\","
     "\"message\":\"" + msgEscaped + "\","
-    "\"hop_count\":" + String(hop_count) + "}";
+    "\"hop_count\":" + String(hop_count) + ","
+    "\"delay_ms\":" + String((unsigned long)delay_ms) + "}";
 
   int code = https.POST(json);
   Serial.print("Relay response code: ");
@@ -113,6 +115,8 @@ void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
   m->message[MESSAGE_LEN] = '\0';
   p += MESSAGE_LEN;
   memcpy(&m->hop_count, p, 4);
+  p += 4;
+  memcpy(&m->delay_ms, p, 4);
 
   pendingHead = nextHead;
   digitalWrite(LED_PIN, HIGH);
@@ -156,7 +160,14 @@ void loop() {
     Serial.print(" message=");
     Serial.println(m->message);
 
-    sendMessageToAPI(m->message_id, m->crumb_id, m->type, m->message, m->hop_count);
+    if (m->delay_ms > 0) {
+      Serial.print("Delay ");
+      Serial.print((unsigned long)m->delay_ms);
+      Serial.println(" ms before relay");
+      delay(m->delay_ms);
+    }
+
+    sendMessageToAPI(m->message_id, m->crumb_id, m->type, m->message, m->hop_count, m->delay_ms);
 
     delay(200);  // LED on time
     digitalWrite(LED_PIN, LOW);
