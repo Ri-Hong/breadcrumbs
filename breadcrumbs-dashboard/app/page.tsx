@@ -19,6 +19,17 @@ export default function Home() {
     }
   }
 
+  async function clearMessages() {
+    try {
+      const res = await fetch("/api/message", { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setMessages([]);
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to clear messages");
+    }
+  }
+
   useEffect(() => {
     loadMessages();
     const t = setInterval(loadMessages, 1500);
@@ -34,6 +45,7 @@ export default function Home() {
 
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <button onClick={loadMessages}>Refresh</button>
+        <button onClick={clearMessages}>Clear messages</button>
         {error && <span style={{ color: "crimson" }}>{error}</span>}
       </div>
 

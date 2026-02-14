@@ -35,3 +35,8 @@ export async function POST(request: Request) {
 
   return Response.json({ status: "ok" } satisfies OkResp);
 }
+
+export async function DELETE() {
+  messages = [];
+  return Response.json({ status: "ok" } satisfies OkResp);
+}
