@@ -45,22 +45,23 @@ export default function Home() {
             <div
               key={`${m.receivedAt ?? "t"}-${i}`}
               style={{
-                border: "1px solid #ddd",
+                border: "1px solid #ccc",
                 borderRadius: 12,
                 padding: 14,
                 marginBottom: 10,
                 background:
-                  (m.type ?? "MSG").toUpperCase() === "SOS" ? "#fff5f5" : "white",
+                  (m.type ?? "MSG").toUpperCase() === "SOS" ? "#fff5f5" : "#fff",
+                color: "#1a1a1a",
               }}
             >
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <b>
                   {(m.type ?? "MSG").toUpperCase()} — {m.crumb_id}
                 </b>
-                <small>{m.receivedAt ?? ""}</small>
+                <small style={{ color: "#555" }}>{m.receivedAt ?? ""}</small>
               </div>
-              <p style={{ marginBottom: 8 }}>{m.message}</p>
-              <small>Hop count: {m.hop_count ?? "-"}</small>
+              <p style={{ marginBottom: 8, color: "#1a1a1a" }}>{m.message}</p>
+              <small style={{ color: "#555" }}>Hop count: {m.hop_count ?? "-"}</small>
             </div>
           ))
         )}

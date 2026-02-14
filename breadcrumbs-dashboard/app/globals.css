@@ -24,3 +24,9 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Keep selected text legible on light card backgrounds */
+::selection {
+  background: #b4d5fe;
+  color: #0a0a0a;
+}
