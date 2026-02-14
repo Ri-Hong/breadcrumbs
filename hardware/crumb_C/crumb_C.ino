@@ -14,12 +14,15 @@ uint8_t crumbD_Mac[] = {0xE4, 0x65, 0xB8, 0x80, 0x08, 0xC4};
 // Must match Crumb_D and your WiFi AP's channel. If you see "Send FAIL", set this to your AP's channel (e.g. 6 or 11).
 #define ESP_NOW_CHANNEL 6
 
-// Send layout: exactly this byte order (matches Crumb_D offsets: 24, 8, 8, 64, 4)
+// Send layout: matches Crumb_D (24, 8, 8, 64, 4 hop_count, 4 delay_ms)
 #define MSG_ID_LEN   24
 #define CRUMB_ID_LEN 8
 #define TYPE_LEN     8
 #define MESSAGE_LEN  64
-#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4)
+#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)  // hop_count, delay_ms
+
+// Delay (ms) before D relays this message; 0 = no delay
+#define SEND_DELAY_MS 1000
 
 uint8_t outgoingBuf[CRUMB_PAYLOAD_LEN];  // send this raw; no struct = no padding
 esp_now_peer_info_t peerInfo;
@@ -66,7 +69,7 @@ void setup() {
 void loop() {
   messageCounter++;
 
-  // Fill buffer in exact order: message_id(24), crumb_id(8), type(8), message(64), hop_count(4)
+  // Fill buffer: message_id(24), crumb_id(8), type(8), message(64), hop_count(4), delay_ms(4)
   char msgId[MSG_ID_LEN];
   char cid[CRUMB_ID_LEN];
   char typ[TYPE_LEN];
@@ -84,6 +87,8 @@ void loop() {
   n = strlen(msg) + 1;   if (n > MESSAGE_LEN) n = MESSAGE_LEN; memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, msg, n);
   int32_t hc = 1;
   memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hc, 4);
+  uint32_t delayMs = SEND_DELAY_MS;
+  memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &delayMs, 4);
 
   Serial.print("Sending id=");
   Serial.println(msgId);
