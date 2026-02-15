@@ -4,8 +4,7 @@
  * Trail (messages/ripple): Bread → A → B → C → D. Web UI at http://192.168.4.1
  * See hardware/MACs.md.
  *
- * LED: SOLID ON = tracked crumb signal good; OFF = bad → then drop next;
- *      BLINKING = crumb in pouch (RSSI > -40).
+ * LED: OFF in DROP_NEXT and TRACK_SIGNAL; FLASHING in PICKUP; OFF otherwise.
  */
 
 #include <esp_now.h>
@@ -63,6 +62,8 @@ unsigned long weak_start_ms = 0;
 const int RSSI_DROP = -60;
 const int RSSI_IN_POUCH = -40;
 const unsigned long WEAK_FOR_MS = 500;
+// After we send MSG_IN_POUCH to a crumb, treat them as "in pouch" for this long (so ripple skips them even if RSSI flickers).
+const unsigned long IN_POUCH_CONSIDER_MS = 30000;
 const unsigned long MIN_TIME_BETWEEN_DROPS = 5000;
 
 // Servo: extended position = drop one crumb. Finetune angles in SERVO*_ANGLE_* (0–180).
@@ -168,11 +169,16 @@ void broadcastEmpty() {
 }
 
 // Trail order: A(3) → B(2) → C(1) → D(0). Returns index of first crumb not in pouch, or CRUMB_TRAIL_HEAD_IDX if all in pouch.
+// A crumb counts as "in pouch" if RSSI is strong OR we recently sent them MSG_IN_POUCH (so ripple skips them when they've just come back).
 static int firstTrailNodeNotInPouch() {
     static const int trail_order[4] = {3, 2, 1, 0};  // A, B, C, D
+    unsigned long now = millis();
     for (int t = 0; t < 4; t++) {
         int i = trail_order[t];
-        if (last_rssi[i] <= RSSI_IN_POUCH) return i;  // not in pouch (or never seen)
+        bool inPouchByRssi = (last_rssi[i] > RSSI_IN_POUCH);
+        bool inPouchByRecentNotify = (last_in_pouch_sent_ms[i] != 0 &&
+            (unsigned long)(now - last_in_pouch_sent_ms[i]) < IN_POUCH_CONSIDER_MS);
+        if (!inPouchByRssi && !inPouchByRecentNotify) return i;  // first not in pouch
     }
     return CRUMB_TRAIL_HEAD_IDX;  // all in pouch, send to A
 }
@@ -471,10 +477,7 @@ void loop() {
             } else {
                 weak_start_ms = 0;
             }
-            if (nowWeak)
-                digitalWrite(LED_PIN, LOW);
-            else
-                digitalWrite(LED_PIN, HIGH);
+            // LED reflects FSM stage (see block below), not signal here
             bool receivedOnce = (idx >= 0 && last_seen_ms[idx] != 0);
             bool weakEnough = (weak_start_ms != 0) && (millis() - weak_start_ms >= WEAK_FOR_MS);
             bool cooldownOk = (millis() - last_drop_ms >= MIN_TIME_BETWEEN_DROPS);
@@ -532,9 +535,10 @@ void loop() {
         }
     }
 
-    if (millis() < in_pouch_blink_until_ms)
-        digitalWrite(LED_PIN, (millis() / 100) % 2);
-    else if (st != TRACK_SIGNAL && st != PICKUP)
+    // LED by FSM stage: DROP_NEXT/TRACK_SIGNAL = off; PICKUP = flash; others = off
+    if (st == PICKUP)
+        digitalWrite(LED_PIN, (millis() / 200) % 2);
+    else
         digitalWrite(LED_PIN, LOW);
 
     if ((unsigned long)(millis() - last_print_ms) >= 500) {
