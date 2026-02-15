@@ -1,34 +1,37 @@
 // Crumb_C: ESP-NOW relay — receive from B, forward to D.
 // Chain: A -> B -> C -> D. Same payload layout; increments hop_count on forward.
 
-#include <esp_now.h>
 #include <WiFi.h>
+#include <esp_now.h>
 #include <esp_wifi.h>
 #include <string.h>
 
+// Bread MAC (from hardware/MACs.md) — for beacon so Bread can track this crumb
+uint8_t bread_Mac[] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};
 // Crumb_D MAC (from hardware/MACs.md)
 uint8_t crumbD_Mac[] = {0xE4, 0x65, 0xB8, 0x80, 0x08, 0xC4};
 
 #define LED_PIN 2
-#define BUZZER_PIN 25   // Active buzzer; set to -1 if no buzzer
-#define RIPPLE_DELAY_MS 500   // Delay before forwarding a RIPPLE so the wave is visible
+#define BUZZER_PIN 25          // Active buzzer; set to -1 if no buzzer
+#define RIPPLE_DELAY_MS 500    // Delay before forwarding a RIPPLE so the wave is visible
 #define MESSAGE_DELAY_MS 1000  // Delay before forwarding a standard MSG so the wave is visible along the trail
 #define ESP_NOW_CHANNEL 6
+#define BEACON_INTERVAL_MS 400
 
-#define MSG_ID_LEN   24
+#define MSG_ID_LEN 24
 #define CRUMB_ID_LEN 8
-#define TYPE_LEN     8
-#define MESSAGE_LEN  64
+#define TYPE_LEN 8
+#define MESSAGE_LEN 64
 #define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)
 
 #define PENDING_QUEUE_LEN 8
 struct pending {
-  char message_id[MSG_ID_LEN + 1];
-  char crumb_id[CRUMB_ID_LEN + 1];
-  char type[TYPE_LEN + 1];
-  char message[MESSAGE_LEN + 1];
-  int hop_count;
-  uint32_t delay_ms;
+    char message_id[MSG_ID_LEN + 1];
+    char crumb_id[CRUMB_ID_LEN + 1];
+    char type[TYPE_LEN + 1];
+    char message[MESSAGE_LEN + 1];
+    int hop_count;
+    uint32_t delay_ms;
 };
 static struct pending pendingQueue[PENDING_QUEUE_LEN];
 static volatile int pendingHead = 0;
@@ -36,134 +39,159 @@ static volatile int pendingTail = 0;
 
 // Dedupe: B sends 3 retries; only queue one copy per message_id
 static char lastQueuedMsgId[MSG_ID_LEN + 1] = {0};
+static unsigned long lastBeaconMs = 0;
 
 uint8_t forwardBuf[CRUMB_PAYLOAD_LEN];
 esp_now_peer_info_t peerInfo;
 
-void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
-  if (len != CRUMB_PAYLOAD_LEN) return;
+void OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* incomingData, int len) {
+    (void)info;
+    if (len != CRUMB_PAYLOAD_LEN) return;
 
-  char msgId[MSG_ID_LEN + 1];
-  memcpy(msgId, incomingData, MSG_ID_LEN);
-  msgId[MSG_ID_LEN] = '\0';
-  if (strcmp(msgId, lastQueuedMsgId) == 0) return;  // duplicate from B's retries
+    char msgId[MSG_ID_LEN + 1];
+    memcpy(msgId, incomingData, MSG_ID_LEN);
+    msgId[MSG_ID_LEN] = '\0';
+    if (strcmp(msgId, lastQueuedMsgId) == 0) return;  // duplicate from B's retries
 
-  int nextHead = (pendingHead + 1) % PENDING_QUEUE_LEN;
-  if (nextHead == pendingTail) return;
+    int nextHead = (pendingHead + 1) % PENDING_QUEUE_LEN;
+    if (nextHead == pendingTail) return;
 
-  struct pending* m = &pendingQueue[pendingHead];
-  const uint8_t* p = incomingData;
-  memcpy(m->message_id, p, MSG_ID_LEN);
-  m->message_id[MSG_ID_LEN] = '\0';
-  p += MSG_ID_LEN;
-  memcpy(m->crumb_id, p, CRUMB_ID_LEN);
-  m->crumb_id[CRUMB_ID_LEN] = '\0';
-  p += CRUMB_ID_LEN;
-  memcpy(m->type, p, TYPE_LEN);
-  m->type[TYPE_LEN] = '\0';
-  p += TYPE_LEN;
-  memcpy(m->message, p, MESSAGE_LEN);
-  m->message[MESSAGE_LEN] = '\0';
-  p += MESSAGE_LEN;
-  memcpy(&m->hop_count, p, 4);
-  p += 4;
-  memcpy(&m->delay_ms, p, 4);
+    struct pending* m = &pendingQueue[pendingHead];
+    const uint8_t* p = incomingData;
+    memcpy(m->message_id, p, MSG_ID_LEN);
+    m->message_id[MSG_ID_LEN] = '\0';
+    p += MSG_ID_LEN;
+    memcpy(m->crumb_id, p, CRUMB_ID_LEN);
+    m->crumb_id[CRUMB_ID_LEN] = '\0';
+    p += CRUMB_ID_LEN;
+    memcpy(m->type, p, TYPE_LEN);
+    m->type[TYPE_LEN] = '\0';
+    p += TYPE_LEN;
+    memcpy(m->message, p, MESSAGE_LEN);
+    m->message[MESSAGE_LEN] = '\0';
+    p += MESSAGE_LEN;
+    memcpy(&m->hop_count, p, 4);
+    p += 4;
+    memcpy(&m->delay_ms, p, 4);
 
-  strncpy(lastQueuedMsgId, m->message_id, MSG_ID_LEN);
-  lastQueuedMsgId[MSG_ID_LEN] = '\0';
-  pendingHead = nextHead;
-  digitalWrite(LED_PIN, HIGH);
+    strncpy(lastQueuedMsgId, m->message_id, MSG_ID_LEN);
+    lastQueuedMsgId[MSG_ID_LEN] = '\0';
+    pendingHead = nextHead;
+    digitalWrite(LED_PIN, HIGH);
 }
 
-void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
-  if (status == ESP_NOW_SEND_SUCCESS) {
-    Serial.println("Forward OK");
-  } else {
-    Serial.println("Forward FAIL");
-  }
+void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status) {
+    (void)info;
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        Serial.println("Forward OK");
+    } else {
+        Serial.println("Forward FAIL");
+    }
 }
 
 void pulseBuzzer() {
 #if BUZZER_PIN >= 0
-  for (int i = 0; i < 2; i++) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    delay(80);
-    digitalWrite(BUZZER_PIN, LOW);
-    delay(60);
-  }
+    for (int i = 0; i < 2; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(80);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(60);
+    }
 #endif
 }
 
 void setup() {
-  Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
+    Serial.begin(115200);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
 #if BUZZER_PIN >= 0
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
 #endif
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);
 
-  esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-  esp_now_register_recv_cb(OnDataRecv);
-  esp_now_register_send_cb(OnDataSent);
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+        return;
+    }
+    esp_now_register_recv_cb(OnDataRecv);
+    esp_now_register_send_cb(OnDataSent);
 
-  memcpy(peerInfo.peer_addr, crumbD_Mac, 6);
-  peerInfo.channel = ESP_NOW_CHANNEL;
-  peerInfo.encrypt = false;
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer (Crumb_D)");
-    return;
-  }
+    memset(&peerInfo, 0, sizeof(peerInfo));
+    memcpy(peerInfo.peer_addr, bread_Mac, 6);
+    peerInfo.channel = ESP_NOW_CHANNEL;
+    peerInfo.encrypt = false;
+    peerInfo.ifidx = WIFI_IF_STA;
+    if (esp_now_add_peer(&peerInfo) == ESP_OK)
+        Serial.println("Peer Bread added (beacon)");
 
-  Serial.println("Crumb_C: listening for B, forwarding to D");
+    memcpy(peerInfo.peer_addr, crumbD_Mac, 6);
+    peerInfo.channel = ESP_NOW_CHANNEL;
+    peerInfo.encrypt = false;
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Failed to add peer (Crumb_D)");
+        return;
+    }
+
+    Serial.println("Crumb_C: listening for B, forwarding to D");
 }
 
 void loop() {
-  if (pendingTail != pendingHead) {
-    struct pending* m = &pendingQueue[pendingTail];
-    pendingTail = (pendingTail + 1) % PENDING_QUEUE_LEN;
+    if (pendingTail != pendingHead) {
+        struct pending* m = &pendingQueue[pendingTail];
+        pendingTail = (pendingTail + 1) % PENDING_QUEUE_LEN;
 
-    Serial.print("Forwarding id=");
-    Serial.println(m->message_id);
+        Serial.print("Forwarding id=");
+        Serial.println(m->message_id);
 
-    if (strcmp(m->type, "RIPPLE") == 0) {
-      delay(RIPPLE_DELAY_MS);
-    } else if (strcmp(m->type, "MSG") == 0) {
-      delay(MESSAGE_DELAY_MS);
+        if (strcmp(m->type, "RIPPLE") == 0) {
+            delay(RIPPLE_DELAY_MS);
+        } else if (strcmp(m->type, "MSG") == 0) {
+            delay(MESSAGE_DELAY_MS);
+        }
+
+        int32_t hc = m->hop_count + 1;
+
+        memset(forwardBuf, 0, CRUMB_PAYLOAD_LEN);
+        size_t n;
+        n = strlen(m->message_id) + 1;
+        if (n > MSG_ID_LEN) n = MSG_ID_LEN;
+        memcpy(forwardBuf, m->message_id, n);
+        n = strlen(m->crumb_id) + 1;
+        if (n > CRUMB_ID_LEN) n = CRUMB_ID_LEN;
+        memcpy(forwardBuf + MSG_ID_LEN, m->crumb_id, n);
+        n = strlen(m->type) + 1;
+        if (n > TYPE_LEN) n = TYPE_LEN;
+        memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN, m->type, n);
+        n = strlen(m->message) + 1;
+        if (n > MESSAGE_LEN) n = MESSAGE_LEN;
+        memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, m->message, n);
+        memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hc, 4);
+        memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &m->delay_ms, 4);
+
+        for (int r = 0; r < 3; r++) {
+            esp_err_t result = esp_now_send(crumbD_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
+            if (result != ESP_OK) {
+                Serial.println("esp_now_send error");
+            }
+            if (r < 2) delay(80);
+        }
+
+        if (strcmp(m->type, "RIPPLE") == 0) {
+            pulseBuzzer();
+        }
+        delay(200);
+        digitalWrite(LED_PIN, LOW);
     }
 
-    int32_t hc = m->hop_count + 1;
-
-    memset(forwardBuf, 0, CRUMB_PAYLOAD_LEN);
-    size_t n;
-    n = strlen(m->message_id) + 1; if (n > MSG_ID_LEN) n = MSG_ID_LEN; memcpy(forwardBuf, m->message_id, n);
-    n = strlen(m->crumb_id) + 1;   if (n > CRUMB_ID_LEN) n = CRUMB_ID_LEN; memcpy(forwardBuf + MSG_ID_LEN, m->crumb_id, n);
-    n = strlen(m->type) + 1;       if (n > TYPE_LEN) n = TYPE_LEN; memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN, m->type, n);
-    n = strlen(m->message) + 1;    if (n > MESSAGE_LEN) n = MESSAGE_LEN; memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, m->message, n);
-    memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hc, 4);
-    memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &m->delay_ms, 4);
-
-    for (int r = 0; r < 3; r++) {
-      esp_err_t result = esp_now_send(crumbD_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
-      if (result != ESP_OK) {
-        Serial.println("esp_now_send error");
-      }
-      if (r < 2) delay(80);
+    if ((unsigned long)(millis() - lastBeaconMs) >= BEACON_INTERVAL_MS) {
+        lastBeaconMs = millis();
+        uint8_t beacon[2] = {0x02, 'C'};
+        esp_now_send(bread_Mac, beacon, 2);
     }
-
-    if (strcmp(m->type, "RIPPLE") == 0) {
-      pulseBuzzer();
-    }
-    delay(200);
-    digitalWrite(LED_PIN, LOW);
-  }
-  delay(10);
+    delay(10);
 }
