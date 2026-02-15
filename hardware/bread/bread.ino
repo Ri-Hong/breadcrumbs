@@ -65,6 +65,19 @@ const int RSSI_IN_POUCH = -40;
 const unsigned long WEAK_FOR_MS = 500;
 const unsigned long MIN_TIME_BETWEEN_DROPS = 5000;
 
+// Servo: extended position = drop one crumb. Finetune angles in SERVO*_ANGLE_* (0–180).
+#define SERVO1_PIN 25
+#define SERVO2_PIN 26
+#define SERVO1_ANGLE_HOLD 0
+#define SERVO1_ANGLE_DROP 90
+#define SERVO2_ANGLE_HOLD 180
+#define SERVO2_ANGLE_DROP 90
+#define SERVO_DROP_MS 400
+#define SERVO_LEDC_RES_BITS 16
+#define SERVO_FREQ_HZ 50
+#define SERVO_PULSE_MIN_US 1000
+#define SERVO_PULSE_MAX_US 2000
+
 int last_rssi[4] = {-100, -100, -100, -100};
 unsigned long last_seen_ms[4] = {0, 0, 0, 0};
 unsigned long last_print_ms = 0;
@@ -72,6 +85,11 @@ unsigned long in_pouch_blink_until_ms = 0;
 unsigned long last_error_ms = 0;
 unsigned long last_recv_debug_ms = 0;
 unsigned long last_in_pouch_sent_ms[4] = {0, 0, 0, 0};
+// Defer MSG_IN_POUCH sends to main loop so esp_now_send isn't called from recv callback
+// (fixes message/ripple send failing during TRACK_SIGNAL due to ESP-NOW contention).
+volatile bool pending_in_pouch_send[4] = {false, false, false, false};
+// Non-blocking servo drop: 0 = idle; else millis() when we may retract (so loop can run server.handleClient()).
+unsigned long servo_drop_until_ms = 0;
 
 WebServer server(80);
 uint8_t outgoingBuf[CRUMB_PAYLOAD_LEN];
@@ -85,6 +103,27 @@ static int idxFromId(char id) {
     return -1;
 }
 bool armed() { return true; }
+
+static uint32_t servoAngleToDuty(int angle) {
+    if (angle < 0) angle = 0;
+    if (angle > 180) angle = 180;
+    uint32_t pulseUs = SERVO_PULSE_MIN_US + (unsigned long)angle * (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US) / 180;
+    return (unsigned long)pulseUs * (1UL << SERVO_LEDC_RES_BITS) / 20000;
+}
+static void servoAttach() {
+    ledcAttach(SERVO1_PIN, SERVO_FREQ_HZ, SERVO_LEDC_RES_BITS);
+    ledcAttach(SERVO2_PIN, SERVO_FREQ_HZ, SERVO_LEDC_RES_BITS);
+}
+static void setServo1Angle(int angle) { ledcWrite(SERVO1_PIN, servoAngleToDuty(angle)); }
+static void setServo2Angle(int angle) { ledcWrite(SERVO2_PIN, servoAngleToDuty(angle)); }
+// Physical drop: extend (drop position), hold, then retract (hold). Call once per crumb drop.
+static void dropCrumbServo() {
+    setServo1Angle(SERVO1_ANGLE_DROP);
+    setServo2Angle(SERVO2_ANGLE_DROP);
+    delay(SERVO_DROP_MS);
+    setServo1Angle(SERVO1_ANGLE_HOLD);
+    setServo2Angle(SERVO2_ANGLE_HOLD);
+}
 
 bool releaseCrumb(char crumb_id) {
     int idx = idxFromId(crumb_id);
@@ -128,6 +167,16 @@ void broadcastEmpty() {
     esp_now_send(crumb_macs[0], (uint8_t*)&msg, sizeof(msg));
 }
 
+// Trail order: A(3) → B(2) → C(1) → D(0). Returns index of first crumb not in pouch, or CRUMB_TRAIL_HEAD_IDX if all in pouch.
+static int firstTrailNodeNotInPouch() {
+    static const int trail_order[4] = {3, 2, 1, 0};  // A, B, C, D
+    for (int t = 0; t < 4; t++) {
+        int i = trail_order[t];
+        if (last_rssi[i] <= RSSI_IN_POUCH) return i;  // not in pouch (or never seen)
+    }
+    return CRUMB_TRAIL_HEAD_IDX;  // all in pouch, send to A
+}
+
 void sendToTrail(const char* message) {
     if (!message || strlen(message) == 0) return;
     messageCounter++;
@@ -147,11 +196,12 @@ void sendToTrail(const char* message) {
     uint32_t delay_ms = 0;
     memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hop_count, 4);
     memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &delay_ms, 4);
+    int target = firstTrailNodeNotInPouch();
     for (int r = 0; r < 3; r++) {
-        esp_now_send(crumb_macs[CRUMB_TRAIL_HEAD_IDX], outgoingBuf, CRUMB_PAYLOAD_LEN);
+        esp_now_send(crumb_macs[target], outgoingBuf, CRUMB_PAYLOAD_LEN);
         if (r < 2) delay(80);
     }
-    Serial.print("Sent to trail: ");
+    Serial.printf("Sent to trail (-> %c): ", crumb_ids[target]);
     Serial.println(msg);
 }
 
@@ -172,11 +222,12 @@ void sendRippleToTrail() {
     uint32_t delay_ms = 0;
     memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hop_count, 4);
     memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &delay_ms, 4);
+    int target = firstTrailNodeNotInPouch();
     for (int r = 0; r < 3; r++) {
-        esp_now_send(crumb_macs[CRUMB_TRAIL_HEAD_IDX], outgoingBuf, CRUMB_PAYLOAD_LEN);
+        esp_now_send(crumb_macs[target], outgoingBuf, CRUMB_PAYLOAD_LEN);
         if (r < 2) delay(80);
     }
-    Serial.println("Ripple sent (A → B → C → D)");
+    Serial.printf("Ripple sent (first node not in pouch: %c)\n", crumb_ids[target]);
 }
 
 static bool recv_ever_called = false;
@@ -195,14 +246,7 @@ void OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* incomingData, in
             last_rssi[i] = (info->rx_ctrl != NULL) ? info->rx_ctrl->rssi : -70;
             if (last_rssi[i] > RSSI_IN_POUCH) {
                 in_pouch_blink_until_ms = millis() + 400;
-                if ((unsigned long)(millis() - last_in_pouch_sent_ms[i]) >= 2000) {
-                    last_in_pouch_sent_ms[i] = millis();
-                    bread_message_t reply;
-                    reply.type = MSG_IN_POUCH;
-                    reply.crumb_id = crumb_ids[i];
-                    esp_now_send(crumb_macs[i], (uint8_t*)&reply, sizeof(reply));
-                    Serial.printf("Crumb %c in pouch (RSSI %d > %d)\n", crumb_ids[i], last_rssi[i], RSSI_IN_POUCH);
-                }
+                pending_in_pouch_send[i] = true;  // defer send to main loop (no esp_now_send in callback)
             }
             if ((unsigned long)(millis() - last_recv_debug_ms) >= 2000) {
                 last_recv_debug_ms = millis();
@@ -242,13 +286,7 @@ void OnDataRecv(const uint8_t* mac_addr, const uint8_t* data, int len) {
             last_rssi[i] = -70;
             if (last_rssi[i] > RSSI_IN_POUCH) {
                 in_pouch_blink_until_ms = millis() + 400;
-                if ((unsigned long)(millis() - last_in_pouch_sent_ms[i]) >= 2000) {
-                    last_in_pouch_sent_ms[i] = millis();
-                    bread_message_t reply;
-                    reply.type = MSG_IN_POUCH;
-                    reply.crumb_id = crumb_ids[i];
-                    esp_now_send(crumb_macs[i], (uint8_t*)&reply, sizeof(reply));
-                }
+                pending_in_pouch_send[i] = true;  // defer send to main loop (no esp_now_send in callback)
             }
             if ((unsigned long)(millis() - last_recv_debug_ms) >= 2000) {
                 last_recv_debug_ms = millis();
@@ -339,6 +377,10 @@ void setup() {
     digitalWrite(LED_PIN, LOW);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
+    servoAttach();
+    setServo1Angle(SERVO1_ANGLE_HOLD);
+    setServo2Angle(SERVO2_ANGLE_HOLD);
+
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(ap_ssid, ap_password, ESP_NOW_CHANNEL);
     IPAddress ip = WiFi.softAPIP();
@@ -375,6 +417,9 @@ void setup() {
 }
 
 void loop() {
+    // Handle web requests early and often so UI works even while FSM is active (e.g. during servo drop).
+    server.handleClient();
+
     switch (st) {
         case INIT:
             next_idx = 0;
@@ -390,14 +435,25 @@ void loop() {
                 st = PICKUP;
                 break;
             }
-            if (releaseCrumb(crumb_ids[next_idx])) {
-                c_id = crumb_ids[next_idx];
-                next_idx++;
-                last_drop_ms = millis();
-                weak_start_ms = 0;
-                st = TRACK_SIGNAL;
-            } else {
-                st = ERROR;
+            if (servo_drop_until_ms == 0) {
+                // Start drop (non-blocking so web server can run)
+                setServo1Angle(SERVO1_ANGLE_DROP);
+                setServo2Angle(SERVO2_ANGLE_DROP);
+                servo_drop_until_ms = millis() + SERVO_DROP_MS;
+            } else if (millis() >= servo_drop_until_ms) {
+                // End drop, retract, then release crumb
+                setServo1Angle(SERVO1_ANGLE_HOLD);
+                setServo2Angle(SERVO2_ANGLE_HOLD);
+                servo_drop_until_ms = 0;
+                if (releaseCrumb(crumb_ids[next_idx])) {
+                    c_id = crumb_ids[next_idx];
+                    next_idx++;
+                    last_drop_ms = millis();
+                    weak_start_ms = 0;
+                    st = TRACK_SIGNAL;
+                } else {
+                    st = ERROR;
+                }
             }
             break;
         }
@@ -463,6 +519,19 @@ void loop() {
         }
     }
 
+    // Process deferred MSG_IN_POUCH sends (so esp_now_send is only called from main loop).
+    for (int i = 0; i < N; i++) {
+        if (pending_in_pouch_send[i] && (unsigned long)(millis() - last_in_pouch_sent_ms[i]) >= 2000) {
+            pending_in_pouch_send[i] = false;
+            last_in_pouch_sent_ms[i] = millis();
+            bread_message_t reply;
+            reply.type = MSG_IN_POUCH;
+            reply.crumb_id = crumb_ids[i];
+            esp_now_send(crumb_macs[i], (uint8_t*)&reply, sizeof(reply));
+            Serial.printf("Crumb %c in pouch (RSSI %d > %d)\n", crumb_ids[i], last_rssi[i], RSSI_IN_POUCH);
+        }
+    }
+
     if (millis() < in_pouch_blink_until_ms)
         digitalWrite(LED_PIN, (millis() / 100) % 2);
     else if (st != TRACK_SIGNAL && st != PICKUP)
@@ -515,8 +584,6 @@ void loop() {
         }
         Serial.println("----------------------------------------");
     }
-
-    server.handleClient();
 
     if (digitalRead(BUTTON_PIN) == LOW) {
         unsigned long now = millis();
