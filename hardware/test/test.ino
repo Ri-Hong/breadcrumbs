@@ -1,13 +1,15 @@
-// Crumb_B: ESP-NOW relay — receive from A, forward to C.
-// Chain: A -> B -> C -> D. Same payload layout; increments hop_count on forward.
+// Crumb_A: Relay — receive from Bread (pouch), forward to B.
+// Chain: Bread -> A -> B -> C -> D (D relays to API).
 
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <string.h>
 
-// Crumb_C MAC (from hardware/MACs.md)
-uint8_t crumbC_Mac[] = {0x98, 0xF4, 0xAB, 0x6F, 0xFC, 0x80};
+// Bread MAC (sender) — A must receive from Bread
+uint8_t bread_Mac[] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};
+// Crumb_B MAC (from hardware/MACs.md)
+uint8_t crumbB_Mac[] = {0x24, 0x0A, 0xC4, 0xAE, 0x97, 0xA8};
 
 #define LED_PIN 2
 #define ESP_NOW_CHANNEL 6
@@ -31,19 +33,21 @@ static struct pending pendingQueue[PENDING_QUEUE_LEN];
 static volatile int pendingHead = 0;
 static volatile int pendingTail = 0;
 
-// Dedupe: A sends 3 retries; only queue one copy per message_id
 static char lastQueuedMsgId[MSG_ID_LEN + 1] = {0};
 
 uint8_t forwardBuf[CRUMB_PAYLOAD_LEN];
 esp_now_peer_info_t peerInfo;
 
 void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
+  Serial.print("Recv ");
+  Serial.print(len);
+  Serial.println(" bytes");
   if (len != CRUMB_PAYLOAD_LEN) return;
 
   char msgId[MSG_ID_LEN + 1];
   memcpy(msgId, incomingData, MSG_ID_LEN);
   msgId[MSG_ID_LEN] = '\0';
-  if (strcmp(msgId, lastQueuedMsgId) == 0) return;  // duplicate from A's retries
+  if (strcmp(msgId, lastQueuedMsgId) == 0) return;
 
   int nextHead = (pendingHead + 1) % PENDING_QUEUE_LEN;
   if (nextHead == pendingTail) return;
@@ -97,15 +101,30 @@ void setup() {
   esp_now_register_recv_cb(OnDataRecv);
   esp_now_register_send_cb(OnDataSent);
 
-  memcpy(peerInfo.peer_addr, crumbC_Mac, 6);
+  // Add Bread as peer so we receive from it (some stacks only deliver from known peers)
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, bread_Mac, 6);
   peerInfo.channel = ESP_NOW_CHANNEL;
   peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Failed to add peer (Crumb_C)");
+    Serial.println("Failed to add peer (Bread)");
+  } else {
+    Serial.println("Peer Bread added");
+  }
+
+  memcpy(peerInfo.peer_addr, crumbB_Mac, 6);
+  peerInfo.channel = ESP_NOW_CHANNEL;
+  peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer (Crumb_B)");
     return;
   }
 
-  Serial.println("Crumb_B: listening for A, forwarding to C");
+  Serial.print("Crumb_A MAC: ");
+  Serial.println(WiFi.macAddress());
+  Serial.println("Crumb_A: listening for Bread, forwarding to B");
 }
 
 void loop() {
@@ -128,7 +147,7 @@ void loop() {
     memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &m->delay_ms, 4);
 
     for (int r = 0; r < 3; r++) {
-      esp_err_t result = esp_now_send(crumbC_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
+      esp_err_t result = esp_now_send(crumbB_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
       if (result != ESP_OK) {
         Serial.println("esp_now_send error");
       }

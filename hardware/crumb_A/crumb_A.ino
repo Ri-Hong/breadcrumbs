@@ -1,48 +1,85 @@
-// Crumb: no Hall sensor. RELEASE from Bread → LED on. Bread says "in pouch" (RSSI > -15) → LED off.
-// Always sends beacons so Bread can measure RSSI (drop when < -60, in pouch when > -15).
+// Crumb_A: Relay — receive from Bread (pouch), forward to B.
+// Chain: Bread -> A -> B -> C -> D (D relays to API).
 
 #include <esp_now.h>
 #include <WiFi.h>
+#include <string.h>
 
-#define LED_PIN 14
+// Bread MAC (sender) — A must receive from Bread
+uint8_t bread_Mac[] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};
+// Crumb_B MAC (from hardware/MACs.md)
+uint8_t crumbB_Mac[] = {0x24, 0x0A, 0xC4, 0xAE, 0x97, 0xA8};
 
-// Peer: Bread (pouch). MACs from hardware/MACs.md — Bread: E4:65:B8:83:56:30; A: 24:0A:C4:AF:63:A4
-const uint8_t bread_mac[6] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};  // Bread
-#define CRUMB_ID 'A'   // this firmware runs on the board with Crumb A MAC (24:0A:C4:AF:63:A4)
+#define LED_PIN 2
+#define ESP_NOW_CHANNEL 6
 
-#define MSG_RELEASE  0x01
-#define MSG_IN_POUCH 0x03
-#define MSG_BEACON   0x02
+#define MSG_ID_LEN   24
+#define CRUMB_ID_LEN 8
+#define TYPE_LEN     8
+#define MESSAGE_LEN  64
+#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)
 
-typedef struct __attribute__((packed)) {
-  uint8_t type;
-  uint8_t crumb_id;
-} crumb_message_t;
+#define PENDING_QUEUE_LEN 8
+struct pending {
+  char message_id[MSG_ID_LEN + 1];
+  char crumb_id[CRUMB_ID_LEN + 1];
+  char type[TYPE_LEN + 1];
+  char message[MESSAGE_LEN + 1];
+  int hop_count;
+  uint32_t delay_ms;
+};
+static struct pending pendingQueue[PENDING_QUEUE_LEN];
+static volatile int pendingHead = 0;
+static volatile int pendingTail = 0;
 
-bool dropped_led_on = false;
-unsigned long last_beacon_ms = 0;
-#define BEACON_INTERVAL_MS 400
+static char lastQueuedMsgId[MSG_ID_LEN + 1] = {0};
 
-void sendToBread(uint8_t type) {
-  crumb_message_t msg;
-  msg.type = type;
-  msg.crumb_id = CRUMB_ID;
-  esp_now_send(bread_mac, (uint8_t *)&msg, sizeof(msg));
+uint8_t forwardBuf[CRUMB_PAYLOAD_LEN];
+esp_now_peer_info_t peerInfo;
+
+void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
+  Serial.print("Recv ");
+  Serial.print(len);
+  Serial.println(" bytes");
+  if (len != CRUMB_PAYLOAD_LEN) return;
+
+  char msgId[MSG_ID_LEN + 1];
+  memcpy(msgId, incomingData, MSG_ID_LEN);
+  msgId[MSG_ID_LEN] = '\0';
+  if (strcmp(msgId, lastQueuedMsgId) == 0) return;
+
+  int nextHead = (pendingHead + 1) % PENDING_QUEUE_LEN;
+  if (nextHead == pendingTail) return;
+
+  struct pending* m = &pendingQueue[pendingHead];
+  const uint8_t* p = incomingData;
+  memcpy(m->message_id, p, MSG_ID_LEN);
+  m->message_id[MSG_ID_LEN] = '\0';
+  p += MSG_ID_LEN;
+  memcpy(m->crumb_id, p, CRUMB_ID_LEN);
+  m->crumb_id[CRUMB_ID_LEN] = '\0';
+  p += CRUMB_ID_LEN;
+  memcpy(m->type, p, TYPE_LEN);
+  m->type[TYPE_LEN] = '\0';
+  p += TYPE_LEN;
+  memcpy(m->message, p, MESSAGE_LEN);
+  m->message[MESSAGE_LEN] = '\0';
+  p += MESSAGE_LEN;
+  memcpy(&m->hop_count, p, 4);
+  p += 4;
+  memcpy(&m->delay_ms, p, 4);
+
+  strncpy(lastQueuedMsgId, m->message_id, MSG_ID_LEN);
+  lastQueuedMsgId[MSG_ID_LEN] = '\0';
+  pendingHead = nextHead;
+  digitalWrite(LED_PIN, HIGH);
 }
 
-void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  (void)info;
-  if (len >= (int)sizeof(crumb_message_t)) {
-    const crumb_message_t *msg = (const crumb_message_t *)data;
-    if (msg->type == MSG_RELEASE && (msg->crumb_id == CRUMB_ID || msg->crumb_id == 0)) {
-      dropped_led_on = true;
-      digitalWrite(LED_PIN, HIGH);
-      Serial.println("RELEASE — LED on (drop me)");
-    } else if (msg->type == MSG_IN_POUCH && (msg->crumb_id == CRUMB_ID || msg->crumb_id == 0)) {
-      dropped_led_on = false;
-      digitalWrite(LED_PIN, LOW);
-      Serial.println("In pouch (Bread RSSI > -15) — LED off");
-    }
+void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    Serial.println("Forward OK");
+  } else {
+    Serial.println("Forward FAIL");
   }
 }
 
@@ -53,26 +90,70 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   delay(100);
-  WiFi.setChannel(1);
+  WiFi.setChannel(ESP_NOW_CHANNEL);
   delay(100);
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
     return;
   }
-  esp_now_peer_info_t peerInfo;
-  memset(&peerInfo, 0, sizeof(peerInfo));
-  memcpy(peerInfo.peer_addr, bread_mac, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-  esp_now_add_peer(&peerInfo);
   esp_now_register_recv_cb(OnDataRecv);
+  esp_now_register_send_cb(OnDataSent);
+
+  // Add Bread as peer so we receive from it (some stacks only deliver from known peers)
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, bread_Mac, 6);
+  peerInfo.channel = ESP_NOW_CHANNEL;
+  peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer (Bread)");
+  } else {
+    Serial.println("Peer Bread added");
+  }
+
+  memcpy(peerInfo.peer_addr, crumbB_Mac, 6);
+  peerInfo.channel = ESP_NOW_CHANNEL;
+  peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer (Crumb_B)");
+    return;
+  }
+
+  Serial.print("Crumb_A MAC: ");
+  Serial.println(WiFi.macAddress());
+  Serial.println("Crumb_A: listening for Bread, forwarding to B");
 }
 
 void loop() {
-  digitalWrite(LED_PIN, dropped_led_on ? HIGH : LOW);
+  if (pendingTail != pendingHead) {
+    struct pending* m = &pendingQueue[pendingTail];
+    pendingTail = (pendingTail + 1) % PENDING_QUEUE_LEN;
 
-  if ((unsigned long)(millis() - last_beacon_ms) >= BEACON_INTERVAL_MS) {
-    last_beacon_ms = millis();
-    sendToBread(MSG_BEACON);
+    Serial.print("Forwarding id=");
+    Serial.println(m->message_id);
+
+    int32_t hc = m->hop_count + 1;
+
+    memset(forwardBuf, 0, CRUMB_PAYLOAD_LEN);
+    size_t n;
+    n = strlen(m->message_id) + 1; if (n > MSG_ID_LEN) n = MSG_ID_LEN; memcpy(forwardBuf, m->message_id, n);
+    n = strlen(m->crumb_id) + 1;   if (n > CRUMB_ID_LEN) n = CRUMB_ID_LEN; memcpy(forwardBuf + MSG_ID_LEN, m->crumb_id, n);
+    n = strlen(m->type) + 1;       if (n > TYPE_LEN) n = TYPE_LEN; memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN, m->type, n);
+    n = strlen(m->message) + 1;   if (n > MESSAGE_LEN) n = MESSAGE_LEN; memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, m->message, n);
+    memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hc, 4);
+    memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &m->delay_ms, 4);
+
+    for (int r = 0; r < 3; r++) {
+      esp_err_t result = esp_now_send(crumbB_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
+      if (result != ESP_OK) {
+        Serial.println("esp_now_send error");
+      }
+      if (r < 2) delay(80);
+    }
+
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
   }
+  delay(10);
 }
