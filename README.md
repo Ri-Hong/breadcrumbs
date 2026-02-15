@@ -30,9 +30,10 @@ Breadcrumbs provides a lightweight, portable way to extend connectivity into the
 
 1. The hiker carries multiple ESP32 “crumb” devices in a pouch.
 2. As they walk deeper into the woods, they drop crumbs periodically.
-3. Each crumb automatically connects to its nearest neighbor and forms a relay chain.
-4. Messages are forwarded node-to-node using **ESP-NOW**, a low-power peer-to-peer Wi-Fi protocol.
-5. When the message reaches the gateway node near connectivity, it is forwarded to the internet (e.g., Discord webhook, SMS, or server).
+3. The **pouch (Bread)** uses **ESP-NOW** to measure signal strength (RSSI) of the last-dropped crumb (crumbs send periodic beacons). When the signal drops below a threshold for a short time, it tells the *next* crumb to beep/blink so the hiker knows which one to drop.
+4. Each crumb automatically connects to its nearest neighbor and forms a relay chain.
+5. Messages are forwarded node-to-node using **ESP-NOW**, a low-power peer-to-peer Wi-Fi protocol.
+6. When the message reaches the gateway node near connectivity, it is forwarded to the internet (e.g., Discord webhook, SMS, or server).
 
 ---
 
@@ -44,8 +45,11 @@ ESP32 nodes forward packets across multiple hops without requiring routers or in
 ### 🧲 Pickup Detection with Hall Sensors
 Each crumb can detect when it has been removed from the pouch using a Hall effect sensor + magnet system.
 
+### 📶 RSSI-Based Drop Timing
+The pouch measures the last-dropped crumb’s signal strength (RSSI) from ESP-NOW packets (crumbs send periodic beacons). When the signal stays below a configurable threshold (e.g. -78 dBm) for a short period, the pouch triggers the next crumb to beep/blink—so you drop based on how weak the signal gets, not on a fixed timer.
+
 ### 🔔 Smart Deployment Assistance
-When one crumb is picked up, the next crumb can beep or blink to guide the user.
+When it’s time to drop the next crumb, that crumb beeps or blinks so the user knows which one to take from the pouch.
 
 ### 🆘 Emergency Messaging
 Users can send SOS alerts that propagate through the breadcrumb trail back to safety.
@@ -58,7 +62,7 @@ Crumbs can blink sequentially to guide hikers back along the original path.
 ## 🛠️ Tech Stack
 
 - **ESP32 DevKit v1**
-- **ESP-NOW** (wireless packet relay protocol)
+- **ESP-NOW** (wireless packet relay + RSSI from received packets for drop-by-signal-strength timing; crumbs send periodic beacons)
 - Hall effect sensors + magnets (pickup detection)
 - Gateway node with Wi-Fi hotspot/internet forwarding
 - Optional Discord/Telegram webhook integration
@@ -91,7 +95,7 @@ Recommended configurations:
 - Full phone-to-internet routing through mesh  
 - GPS logging for breadcrumb mapping  
 - Encrypted messaging and authentication  
-- Automatic drop-spacing optimization using RSSI/link quality  
+- Automatic drop-spacing using BLE RSSI (implemented in Bread/pouch firmware)  
 
 ---
 
