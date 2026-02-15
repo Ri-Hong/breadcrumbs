@@ -14,8 +14,8 @@
 // Bread MAC (from hardware/MACs.md) — for beacon so Bread can track this crumb
 uint8_t bread_Mac[] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};
 
-#define LED_PIN 2              // Built-in LED on many ESP32 boards; change if using external LED
-#define BUZZER_PIN 25          // Active buzzer for ripple; set to -1 if no buzzer
+#define LED_PIN 32             // External LED
+#define BUZZER_PIN 5           // Active buzzer for ripple; set to -1 if no buzzer
 #define MESSAGE_DELAY_MS 1000  // Delay before relaying a standard MSG to API so the wave is visible along the trail
 
 // Must match Crumb_C and your WiFi AP's channel (router/hotspot). Many APs use 6 or 11; try 6 first.
@@ -211,12 +211,15 @@ void OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* incomingData, in
 
     pendingHead = nextHead;
     digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void setup() {
     Serial.begin(115200);
     pinMode(LED_PIN, OUTPUT);
+    pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_BUILTIN, LOW);
 #if BUZZER_PIN >= 0
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
@@ -284,6 +287,7 @@ void loop() {
         }
         delay(200);  // LED on time
         digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_BUILTIN, LOW);
     }
 
     if ((unsigned long)(millis() - lastBeaconMs) >= BEACON_INTERVAL_MS) {

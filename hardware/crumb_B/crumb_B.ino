@@ -11,8 +11,8 @@ uint8_t bread_Mac[] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};
 // Crumb_C MAC (from hardware/MACs.md)
 uint8_t crumbC_Mac[] = {0x98, 0xF4, 0xAB, 0x6F, 0xFC, 0x80};
 
-#define LED_PIN 2
-#define BUZZER_PIN 25          // Active buzzer; set to -1 if no buzzer
+#define LED_PIN 32
+#define BUZZER_PIN 5           // Active buzzer; set to -1 if no buzzer
 #define RIPPLE_DELAY_MS 500    // Delay before forwarding a RIPPLE so the wave is visible
 #define MESSAGE_DELAY_MS 1000  // Delay before forwarding a standard MSG so the wave is visible along the trail
 #define ESP_NOW_CHANNEL 6
@@ -78,6 +78,7 @@ void OnDataRecv(const esp_now_recv_info_t* info, const uint8_t* incomingData, in
     lastQueuedMsgId[MSG_ID_LEN] = '\0';
     pendingHead = nextHead;
     digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void OnDataSent(const wifi_tx_info_t* info, esp_now_send_status_t status) {
@@ -103,7 +104,9 @@ void pulseBuzzer() {
 void setup() {
     Serial.begin(115200);
     pinMode(LED_PIN, OUTPUT);
+    pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_BUILTIN, LOW);
 #if BUZZER_PIN >= 0
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW);
@@ -186,6 +189,7 @@ void loop() {
         }
         delay(200);
         digitalWrite(LED_PIN, LOW);
+        digitalWrite(LED_BUILTIN, LOW);
     }
 
     if ((unsigned long)(millis() - lastBeaconMs) >= BEACON_INTERVAL_MS) {
