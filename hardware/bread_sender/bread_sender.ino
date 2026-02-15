@@ -24,7 +24,7 @@ uint8_t crumbA_Mac[] = {0x24, 0x0A, 0xC4, 0xAF, 0x63, 0xA4};
 #define MESSAGE_LEN  64
 #define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)
 
-const char* ap_ssid     = "Breadcrumbs-Pouch";
+const char* ap_ssid     = "Bread";
 const char* ap_password = "trail123";  // optional; use "" for open network
 
 WebServer server(80);
@@ -127,60 +127,37 @@ void sendRippleToTrail() {
   digitalWrite(LED_PIN, LOW);
 }
 
-const char* htmlPage = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Breadcrumbs — Send message</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #1a1a1a; color: #eee; min-height: 100vh; }
-    h1 { font-size: 1.3rem; margin-bottom: 4px; }
-    p { color: #999; font-size: 0.9rem; margin-top: 0; }
-    form { margin-top: 16px; }
-    textarea { width: 100%; padding: 12px; font-size: 16px; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: #eee; resize: vertical; min-height: 100px; }
-    button { margin-top: 12px; padding: 12px 24px; font-size: 16px; background: #0d6efd; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
-    button.ripple { background: #7c3aed; margin-left: 12px; }
-    button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .status { margin-top: 12px; font-size: 0.9rem; }
-    .ripple-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #444; }
-    .ok { color: #4ade80; }
-    .err { color: #f87171; }
-  </style>
-</head>
-<body>
-  <h1>Send message out</h1>
-  <p>Type a message below. It will be sent along the trail to the gateway and then to the internet.</p>
-  <form method="POST" action="/send" id="f">
-    <textarea name="message" maxlength="64" placeholder="e.g. I'm OK, at the creek" required></textarea>
-    <br>
-    <button type="submit" id="btn">Send</button>
-  </form>
-  <div class="status" id="status"></div>
-
-  <div class="ripple-section">
-    <p>Send a ripple along the trail (A → B → C → D). Each crumb will light its LED and beep.</p>
-    <form method="POST" action="/ripple" id="rippleForm">
-      <button type="submit" id="rippleBtn" class="ripple">Send Ripple</button>
-    </form>
-  </div>
-
-  <script>
-    document.getElementById('f').onsubmit = function() {
-      document.getElementById('btn').disabled = true;
-      document.getElementById('status').textContent = 'Sending…';
-      document.getElementById('status').className = 'status';
-    };
-    document.getElementById('rippleForm').onsubmit = function() {
-      document.getElementById('rippleBtn').disabled = true;
-      document.getElementById('rippleBtn').textContent = 'Sending…';
-    };
-  </script>
-</body>
-</html>
-)rawliteral";
+// HTML as concatenated string literals (Arduino preprocessor breaks raw strings)
+const char* htmlPage =
+  "<!DOCTYPE html><html><head>"
+  "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  "<title>Breadcrumbs — Send message</title><style>"
+  "*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;padding:20px;background:#1a1a1a;color:#eee;min-height:100vh}"
+  "h1{font-size:1.3rem;margin-bottom:4px}p{color:#999;font-size:.9rem;margin-top:0}"
+  "form{margin-top:16px}textarea{width:100%;padding:12px;font-size:16px;border-radius:8px;border:1px solid #444;background:#2a2a2a;color:#eee;resize:vertical;min-height:100px}"
+  "button{margin-top:12px;padding:12px 24px;font-size:16px;background:#0d6efd;color:#fff;border:none;border-radius:8px;cursor:pointer}"
+  "button.ripple{background:#7c3aed;margin-left:12px}button:disabled{opacity:.6;cursor:not-allowed}"
+  ".status{margin-top:12px;font-size:.9rem}.ripple-section{margin-top:24px;padding-top:20px;border-top:1px solid #444}"
+  ".toggle-row{display:flex;align-items:center;gap:12px;margin-top:12px}"
+  ".toggle-switch{position:relative;width:48px;height:26px;background:#444;border-radius:13px;cursor:pointer;transition:background .2s}"
+  ".toggle-switch.on{background:#7c3aed}.toggle-switch::after{content:'';position:absolute;width:22px;height:22px;left:2px;top:2px;background:#eee;border-radius:50%;transition:transform .2s}"
+  ".toggle-switch.on::after{transform:translateX(22px)}.ripple-status{font-size:.9rem;color:#999}.ok{color:#4ade80}.err{color:#f87171}"
+  "</style></head><body><h1>Send message out</h1>"
+  "<p>Type a message below. It will be sent along the trail to the gateway and then to the internet.</p>"
+  "<form method=\"POST\" action=\"/send\" id=\"f\"><textarea name=\"message\" maxlength=\"64\" placeholder=\"e.g. I'm OK, at the creek\" required></textarea><br>"
+  "<button type=\"submit\" id=\"btn\">Send</button></form><div class=\"status\" id=\"status\"></div>"
+  "<div class=\"ripple-section\"><p>Ripple along the trail (A → B → C → D). Each crumb will light its LED and beep.</p>"
+  "<div class=\"toggle-row\"><div class=\"toggle-switch\" id=\"rippleToggle\" role=\"switch\" aria-checked=\"false\" tabindex=\"0\"></div>"
+  "<span class=\"ripple-status\" id=\"rippleStatus\">Off — turn on to send a ripple every 5s</span></div></div>"
+  "<script>"
+  "document.getElementById('f').onsubmit=function(){document.getElementById('btn').disabled=true;document.getElementById('status').textContent='Sending…';document.getElementById('status').className='status'};"
+  "var RIPPLE_INTERVAL_MS=5000,rippleToggle=document.getElementById('rippleToggle'),rippleStatus=document.getElementById('rippleStatus'),rippleIntervalId=null;"
+  "function sendRipple(){rippleStatus.textContent='Sending…';fetch('/ripple',{method:'POST'}).then(function(r){return r.text()}).then(function(){rippleStatus.textContent='On — next ripple in 5s'}).catch(function(){rippleStatus.textContent='On — send failed, retrying in 5s'})}"
+  "function startRipple(){if(rippleIntervalId)return;rippleToggle.classList.add('on');rippleToggle.setAttribute('aria-checked','true');sendRipple();rippleIntervalId=setInterval(sendRipple,RIPPLE_INTERVAL_MS)}"
+  "function stopRipple(){if(!rippleIntervalId)return;clearInterval(rippleIntervalId);rippleIntervalId=null;rippleToggle.classList.remove('on');rippleToggle.setAttribute('aria-checked','false');rippleStatus.textContent='Off — turn on to send a ripple every 5s'}"
+  "function toggleRipple(){if(rippleIntervalId)stopRipple();else startRipple()}"
+  "rippleToggle.addEventListener('click',toggleRipple);rippleToggle.addEventListener('keydown',function(e){if(e.key==' '||e.key=='Enter'){e.preventDefault();toggleRipple()}});"
+  "</script></body></html>";
 
 void handleRoot() {
   server.send(200, "text/html", htmlPage);
@@ -265,7 +242,7 @@ void setup() {
   server.on("/ripple", HTTP_POST, handleRipple);
   server.onNotFound(handleNotFound);
   server.begin();
-  Serial.println("Web server started. Connect to Breadcrumbs-Pouch and open http://192.168.4.1");
+  Serial.println("Web server started. Connect to Bread and open http://192.168.4.1");
 }
 
 void loop() {
