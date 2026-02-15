@@ -19,7 +19,7 @@ uint8_t crumbB_Mac[] = {0x24, 0x0A, 0xC4, 0xAE, 0x97, 0xA8};
 #define MESSAGE_LEN  64
 #define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)
 
-#define SEND_DELAY_MS 1000
+#define SEND_DELAY_MS 2000
 
 uint8_t outgoingBuf[CRUMB_PAYLOAD_LEN];
 esp_now_peer_info_t peerInfo;

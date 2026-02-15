@@ -31,11 +31,19 @@ static struct pending pendingQueue[PENDING_QUEUE_LEN];
 static volatile int pendingHead = 0;
 static volatile int pendingTail = 0;
 
+// Dedupe: B sends 3 retries; only queue one copy per message_id
+static char lastQueuedMsgId[MSG_ID_LEN + 1] = {0};
+
 uint8_t forwardBuf[CRUMB_PAYLOAD_LEN];
 esp_now_peer_info_t peerInfo;
 
 void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
   if (len != CRUMB_PAYLOAD_LEN) return;
+
+  char msgId[MSG_ID_LEN + 1];
+  memcpy(msgId, incomingData, MSG_ID_LEN);
+  msgId[MSG_ID_LEN] = '\0';
+  if (strcmp(msgId, lastQueuedMsgId) == 0) return;  // duplicate from B's retries
 
   int nextHead = (pendingHead + 1) % PENDING_QUEUE_LEN;
   if (nextHead == pendingTail) return;
@@ -58,6 +66,8 @@ void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
   p += 4;
   memcpy(&m->delay_ms, p, 4);
 
+  strncpy(lastQueuedMsgId, m->message_id, MSG_ID_LEN);
+  lastQueuedMsgId[MSG_ID_LEN] = '\0';
   pendingHead = nextHead;
   digitalWrite(LED_PIN, HIGH);
 }

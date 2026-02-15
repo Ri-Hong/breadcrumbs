@@ -1,121 +1,83 @@
-// Crumb_D: ESP-NOW relay → main network (HTTP POST to dashboard API)
-// When a message is received via ESP-NOW, relay it by calling the API as in https.ino.
+// Crumb_B: ESP-NOW relay — receive from A, forward to C.
+// Chain: A -> B -> C -> D. Same payload layout; increments hop_count on forward.
 
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
 #include <esp_now.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
+#include <string.h>
 
-// Copy secrets.h from hardware/https/ (WIFI_SSID, WIFI_PASSWORD)
-#include "secrets.h"
+// Crumb_C MAC (from hardware/MACs.md)
+uint8_t crumbC_Mac[] = {0x98, 0xF4, 0xAB, 0x6F, 0xFC, 0x80};
 
-#define LED_PIN 2   // Built-in LED on many ESP32 boards; change if using external LED
+#define LED_PIN 2
+#define ESP_NOW_CHANNEL 6
 
-// Message structure: must match Crumb_C (and any other ESP-NOW senders)
-typedef struct struct_crumb_message {
-  char message_id[24];
-  char crumb_id[8];
-  char type[8];
-  char message[64];
+#define MSG_ID_LEN   24
+#define CRUMB_ID_LEN 8
+#define TYPE_LEN     8
+#define MESSAGE_LEN  64
+#define CRUMB_PAYLOAD_LEN (MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4 + 4)
+
+#define PENDING_QUEUE_LEN 8
+struct pending {
+  char message_id[MSG_ID_LEN + 1];
+  char crumb_id[CRUMB_ID_LEN + 1];
+  char type[TYPE_LEN + 1];
+  char message[MESSAGE_LEN + 1];
   int hop_count;
-} struct_crumb_message;
+  uint32_t delay_ms;
+};
+static struct pending pendingQueue[PENDING_QUEUE_LEN];
+static volatile int pendingHead = 0;
+static volatile int pendingTail = 0;
 
-const char* serverURL = "https://breadcrumbs-phi.vercel.app/api/message";
+// Dedupe: A sends 3 retries; only queue one copy per message_id
+static char lastQueuedMsgId[MSG_ID_LEN + 1] = {0};
 
-static bool wifiConnected = false;
-
-void ensureWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiConnected = true;
-    return;
-  }
-  if (!wifiConnected) {
-    Serial.println("Connecting to WiFi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  }
-  const unsigned long timeoutMs = 20000;
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    if (millis() - start > timeoutMs) {
-      Serial.println("\nWiFi timeout. Cannot relay.");
-      return;
-    }
-  }
-  Serial.println("\nWiFi connected.");
-  wifiConnected = true;
-}
-
-// Same contract as https.ino: POST JSON to serverURL
-void sendMessageToAPI(const char* id, const char* crumb_id, const char* type,
-                      const char* message, int hop_count) {
-  ensureWiFi();
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient https;
-  if (!https.begin(client, serverURL)) {
-    Serial.println("HTTPS begin failed");
-    return;
-  }
-
-  https.addHeader("Content-Type", "application/json");
-
-  // Escape quotes in message for JSON (simple: replace " with \")
-  String msgEscaped = String(message);
-  msgEscaped.replace("\"", "\\\"");
-
-  String json =
-    "{\"id\":\"" + String(id) + "\","
-    "\"crumb_id\":\"" + String(crumb_id) + "\","
-    "\"type\":\"" + String(type) + "\","
-    "\"message\":\"" + msgEscaped + "\","
-    "\"hop_count\":" + String(hop_count) + "}";
-
-  int code = https.POST(json);
-  Serial.print("Relay response code: ");
-  Serial.println(code);
-  Serial.println(https.getString());
-  https.end();
-}
+uint8_t forwardBuf[CRUMB_PAYLOAD_LEN];
+esp_now_peer_info_t peerInfo;
 
 void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
-//  if (len < (int)sizeof(struct_crumb_message)) {
-//    Serial.println("Received packet too short, ignoring");
-//    return;
-//  }
+  if (len != CRUMB_PAYLOAD_LEN) return;
 
-  struct_crumb_message msg;
-  memcpy(&msg, incomingData, sizeof(msg));
+  char msgId[MSG_ID_LEN + 1];
+  memcpy(msgId, incomingData, MSG_ID_LEN);
+  msgId[MSG_ID_LEN] = '\0';
+  if (strcmp(msgId, lastQueuedMsgId) == 0) return;  // duplicate from A's retries
 
-  // Null-terminate strings in case sender didn't
-  msg.message_id[sizeof(msg.message_id) - 1] = '\0';
-  msg.crumb_id[sizeof(msg.crumb_id) - 1] = '\0';
-  msg.type[sizeof(msg.type) - 1] = '\0';
-  msg.message[sizeof(msg.message) - 1] = '\0';
+  int nextHead = (pendingHead + 1) % PENDING_QUEUE_LEN;
+  if (nextHead == pendingTail) return;
 
-  Serial.print("ESP-NOW received from ");
-  for (int i = 0; i < 6; i++) {
-    if (mac[i] < 0x10) Serial.print("0");
-    Serial.print(mac[i], HEX);
-    if (i < 5) Serial.print(":");
-  }
-  Serial.println();
-  Serial.print("  id=");
-  Serial.println(msg.message_id);
-  Serial.print("  crumb_id=");
-  Serial.println(msg.crumb_id);
-  Serial.print("  message=");
-  Serial.println(msg.message);
+  struct pending* m = &pendingQueue[pendingHead];
+  const uint8_t* p = incomingData;
+  memcpy(m->message_id, p, MSG_ID_LEN);
+  m->message_id[MSG_ID_LEN] = '\0';
+  p += MSG_ID_LEN;
+  memcpy(m->crumb_id, p, CRUMB_ID_LEN);
+  m->crumb_id[CRUMB_ID_LEN] = '\0';
+  p += CRUMB_ID_LEN;
+  memcpy(m->type, p, TYPE_LEN);
+  m->type[TYPE_LEN] = '\0';
+  p += TYPE_LEN;
+  memcpy(m->message, p, MESSAGE_LEN);
+  m->message[MESSAGE_LEN] = '\0';
+  p += MESSAGE_LEN;
+  memcpy(&m->hop_count, p, 4);
+  p += 4;
+  memcpy(&m->delay_ms, p, 4);
 
+  strncpy(lastQueuedMsgId, m->message_id, MSG_ID_LEN);
+  lastQueuedMsgId[MSG_ID_LEN] = '\0';
+  pendingHead = nextHead;
   digitalWrite(LED_PIN, HIGH);
-  delay(200);
-  digitalWrite(LED_PIN, LOW);
+}
 
-  sendMessageToAPI(msg.message_id, msg.crumb_id, msg.type, msg.message, msg.hop_count);
+void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    Serial.println("Forward OK");
+  } else {
+    Serial.println("Forward FAIL");
+  }
 }
 
 void setup() {
@@ -123,15 +85,58 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+
+  esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
   esp_now_register_recv_cb(OnDataRecv);
-  Serial.println("Crumb_D: listening for ESP-NOW messages (relay to API on receive).");
+  esp_now_register_send_cb(OnDataSent);
+
+  memcpy(peerInfo.peer_addr, crumbC_Mac, 6);
+  peerInfo.channel = ESP_NOW_CHANNEL;
+  peerInfo.encrypt = false;
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer (Crumb_C)");
+    return;
+  }
+
+  Serial.println("Crumb_B: listening for A, forwarding to C");
 }
 
 void loop() {
-  delay(100);
+  if (pendingTail != pendingHead) {
+    struct pending* m = &pendingQueue[pendingTail];
+    pendingTail = (pendingTail + 1) % PENDING_QUEUE_LEN;
+
+    Serial.print("Forwarding id=");
+    Serial.println(m->message_id);
+
+    int32_t hc = m->hop_count + 1;
+
+    memset(forwardBuf, 0, CRUMB_PAYLOAD_LEN);
+    size_t n;
+    n = strlen(m->message_id) + 1; if (n > MSG_ID_LEN) n = MSG_ID_LEN; memcpy(forwardBuf, m->message_id, n);
+    n = strlen(m->crumb_id) + 1;   if (n > CRUMB_ID_LEN) n = CRUMB_ID_LEN; memcpy(forwardBuf + MSG_ID_LEN, m->crumb_id, n);
+    n = strlen(m->type) + 1;       if (n > TYPE_LEN) n = TYPE_LEN; memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN, m->type, n);
+    n = strlen(m->message) + 1;    if (n > MESSAGE_LEN) n = MESSAGE_LEN; memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, m->message, n);
+    memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hc, 4);
+    memcpy(forwardBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &m->delay_ms, 4);
+
+    for (int r = 0; r < 3; r++) {
+      esp_err_t result = esp_now_send(crumbC_Mac, forwardBuf, CRUMB_PAYLOAD_LEN);
+      if (result != ESP_OK) {
+        Serial.println("esp_now_send error");
+      }
+      if (r < 2) delay(80);
+    }
+
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
+  }
+  delay(10);
 }
