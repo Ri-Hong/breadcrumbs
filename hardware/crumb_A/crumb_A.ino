@@ -6,9 +6,9 @@
 
 #define LED_PIN 14
 
-// Peer: Bread (pouch) or espB — use MAC from hardware/MACs.md (Bread: E4:65:B8:83:56:30; espB/Crumb B: 24:0A:C4:AE:97:A8)
-const uint8_t bread_mac[6] = {0x24, 0x0A, 0xC4, 0xAE, 0x97, 0xA8};  // espB
-#define CRUMB_ID 'A'
+// Peer: Bread (pouch). MACs from hardware/MACs.md — Bread: E4:65:B8:83:56:30; A: 24:0A:C4:AF:63:A4
+const uint8_t bread_mac[6] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};  // Bread
+#define CRUMB_ID 'A'   // this firmware runs on the board with Crumb A MAC (24:0A:C4:AF:63:A4)
 
 #define MSG_RELEASE  0x01
 #define MSG_IN_POUCH 0x03
