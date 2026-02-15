@@ -3,6 +3,7 @@
 
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <string.h>
 
 // Bread MAC (sender) — A must receive from Bread
@@ -11,6 +12,9 @@ uint8_t bread_Mac[] = {0xE4, 0x65, 0xB8, 0x83, 0x56, 0x30};
 uint8_t crumbB_Mac[] = {0x24, 0x0A, 0xC4, 0xAE, 0x97, 0xA8};
 
 #define LED_PIN 2
+#define BUZZER_PIN 25   // Active buzzer (or passive with external driver); set to -1 if no buzzer
+#define RIPPLE_DELAY_MS 500   // Delay before forwarding a RIPPLE so the wave is visible A→B→C→D
+#define MESSAGE_DELAY_MS 1000  // Delay before forwarding a standard MSG so the wave is visible along the trail
 #define ESP_NOW_CHANNEL 6
 
 #define MSG_ID_LEN   24
@@ -83,14 +87,30 @@ void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
   }
 }
 
+// Pulse buzzer for ripple messages (two short beeps). No-op if BUZZER_PIN < 0.
+void pulseBuzzer() {
+#if BUZZER_PIN >= 0
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(80);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(60);
+  }
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+#if BUZZER_PIN >= 0
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+#endif
 
   WiFi.mode(WIFI_STA);
   delay(100);
-  WiFi.setChannel(ESP_NOW_CHANNEL);
+  esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
   delay(100);
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
@@ -133,6 +153,12 @@ void loop() {
     Serial.print("Forwarding id=");
     Serial.println(m->message_id);
 
+    if (strcmp(m->type, "RIPPLE") == 0) {
+      delay(RIPPLE_DELAY_MS);
+    } else if (strcmp(m->type, "MSG") == 0) {
+      delay(MESSAGE_DELAY_MS);
+    }
+
     int32_t hc = m->hop_count + 1;
 
     memset(forwardBuf, 0, CRUMB_PAYLOAD_LEN);
@@ -152,6 +178,9 @@ void loop() {
       if (r < 2) delay(80);
     }
 
+    if (strcmp(m->type, "RIPPLE") == 0) {
+      pulseBuzzer();
+    }
     delay(200);
     digitalWrite(LED_PIN, LOW);
   }

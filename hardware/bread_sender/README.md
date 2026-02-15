@@ -15,6 +15,7 @@ Bread is the ESP32 in the pouch. It runs a **WiFi access point** and a **simple 
 
 - **Bread** MAC: `E4:65:B8:83:56:30` (see `../MACs.md`)
 - Bread sends to **Crumb_A** only. Crumb_A must be running the relay firmware (receive from Bread, forward to B).
+- **Ripple button**: GPIO 0 (BOOT button on many ESP32 boards). When pressed, sends a "ripple" message to A → B → C → D. Each crumb turns on its LED and pulses its buzzer. Use `BUTTON_PIN` in `bread_sender.ino` to change the pin.
 
 ## Upload
 

@@ -12,6 +12,8 @@
 #include "secrets.h"
 
 #define LED_PIN 2   // Built-in LED on many ESP32 boards; change if using external LED
+#define BUZZER_PIN 25   // Active buzzer for ripple; set to -1 if no buzzer
+#define MESSAGE_DELAY_MS 1000  // Delay before relaying a standard MSG to API so the wave is visible along the trail
 
 // Must match Crumb_C and your WiFi AP's channel (router/hotspot). Many APs use 6 or 11; try 6 first.
 #define ESP_NOW_CHANNEL 6
@@ -141,6 +143,17 @@ static bool validatePayload(const char* msg_id, const char* crumb_id, int hop_co
   return true;
 }
 
+void pulseBuzzer() {
+#if BUZZER_PIN >= 0
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(80);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(60);
+  }
+#endif
+}
+
 void OnDataRecv(const uint8_t* mac, const uint8_t* incomingData, int len) {
   if (len != CRUMB_PAYLOAD_LEN) return;
 
@@ -186,6 +199,10 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+#if BUZZER_PIN >= 0
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+#endif
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
@@ -229,8 +246,15 @@ void loop() {
       delay(delayMs);
     }
 
+    if (strcmp(m->type, "MSG") == 0) {
+      delay(MESSAGE_DELAY_MS);
+    }
+
     sendMessageToAPI(m->message_id, m->crumb_id, m->type, m->message, m->hop_count, m->delay_ms);
 
+    if (strcmp(m->type, "RIPPLE") == 0) {
+      pulseBuzzer();
+    }
     delay(200);  // LED on time
     digitalWrite(LED_PIN, LOW);
   }

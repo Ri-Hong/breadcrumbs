@@ -10,6 +10,9 @@
 uint8_t crumbD_Mac[] = {0xE4, 0x65, 0xB8, 0x80, 0x08, 0xC4};
 
 #define LED_PIN 2
+#define BUZZER_PIN 25   // Active buzzer; set to -1 if no buzzer
+#define RIPPLE_DELAY_MS 500   // Delay before forwarding a RIPPLE so the wave is visible
+#define MESSAGE_DELAY_MS 1000  // Delay before forwarding a standard MSG so the wave is visible along the trail
 #define ESP_NOW_CHANNEL 6
 
 #define MSG_ID_LEN   24
@@ -80,10 +83,25 @@ void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
   }
 }
 
+void pulseBuzzer() {
+#if BUZZER_PIN >= 0
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(80);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(60);
+  }
+#endif
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+#if BUZZER_PIN >= 0
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+#endif
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
@@ -116,6 +134,12 @@ void loop() {
     Serial.print("Forwarding id=");
     Serial.println(m->message_id);
 
+    if (strcmp(m->type, "RIPPLE") == 0) {
+      delay(RIPPLE_DELAY_MS);
+    } else if (strcmp(m->type, "MSG") == 0) {
+      delay(MESSAGE_DELAY_MS);
+    }
+
     int32_t hc = m->hop_count + 1;
 
     memset(forwardBuf, 0, CRUMB_PAYLOAD_LEN);
@@ -135,6 +159,9 @@ void loop() {
       if (r < 2) delay(80);
     }
 
+    if (strcmp(m->type, "RIPPLE") == 0) {
+      pulseBuzzer();
+    }
     delay(200);
     digitalWrite(LED_PIN, LOW);
   }

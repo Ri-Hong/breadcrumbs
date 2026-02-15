@@ -13,7 +13,10 @@
 uint8_t crumbA_Mac[] = {0x24, 0x0A, 0xC4, 0xAF, 0x63, 0xA4};
 
 #define LED_PIN 2
+#define BUTTON_PIN 0   // GPIO 0 (BOOT button on many ESP32 boards); use INPUT_PULLUP
 #define ESP_NOW_CHANNEL 6
+
+#define TYPE_RIPPLE "RIPPLE"
 
 #define MSG_ID_LEN   24
 #define CRUMB_ID_LEN 8
@@ -29,6 +32,10 @@ esp_now_peer_info_t peerInfo = {};
 
 uint8_t outgoingBuf[CRUMB_PAYLOAD_LEN];
 static uint32_t messageCounter = 0;
+
+// Debounce for ripple button
+static unsigned long lastRipplePressMs = 0;
+#define RIPPLE_DEBOUNCE_MS 600
 
 void OnDataSent(const uint8_t* mac_addr, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
@@ -81,6 +88,45 @@ void sendToTrail(const char* message) {
   digitalWrite(LED_PIN, LOW);
 }
 
+// Send a ripple message (type RIPPLE) to Crumb_A; propagates A -> B -> C -> D. Each crumb turns on LED and pulses buzzer.
+void sendRippleToTrail() {
+  messageCounter++;
+  char msgId[MSG_ID_LEN];
+  char cid[CRUMB_ID_LEN];
+  char typ[TYPE_LEN];
+  char msg[MESSAGE_LEN];
+
+  snprintf(msgId, sizeof(msgId), "RP%lu-%lu", (unsigned long)messageCounter, (unsigned long)millis());
+  snprintf(cid, sizeof(cid), "BREAD");
+  snprintf(typ, sizeof(typ), "%s", TYPE_RIPPLE);
+  snprintf(msg, sizeof(msg), "ping");
+
+  memset(outgoingBuf, 0, CRUMB_PAYLOAD_LEN);
+  size_t n;
+  n = strlen(msgId) + 1; if (n > MSG_ID_LEN) n = MSG_ID_LEN; memcpy(outgoingBuf, msgId, n);
+  n = strlen(cid) + 1;   if (n > CRUMB_ID_LEN) n = CRUMB_ID_LEN; memcpy(outgoingBuf + MSG_ID_LEN, cid, n);
+  n = strlen(typ) + 1;   if (n > TYPE_LEN) n = TYPE_LEN; memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN, typ, n);
+  n = strlen(msg) + 1;   if (n > MESSAGE_LEN) n = MESSAGE_LEN; memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN, msg, n);
+  int32_t hop_count = 1;
+  uint32_t delay_ms = 0;
+  memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN, &hop_count, 4);
+  memcpy(outgoingBuf + MSG_ID_LEN + CRUMB_ID_LEN + TYPE_LEN + MESSAGE_LEN + 4, &delay_ms, 4);
+
+  Serial.println("Sending RIPPLE to trail (A -> B -> C -> D)");
+
+  for (int r = 0; r < 3; r++) {
+    esp_err_t result = esp_now_send(crumbA_Mac, outgoingBuf, CRUMB_PAYLOAD_LEN);
+    if (result != ESP_OK) {
+      Serial.print("esp_now_send error: 0x");
+      Serial.println((int)result, HEX);
+    }
+    if (r < 2) delay(80);
+  }
+  digitalWrite(LED_PIN, HIGH);
+  delay(200);
+  digitalWrite(LED_PIN, LOW);
+}
+
 const char* htmlPage = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -96,8 +142,10 @@ const char* htmlPage = R"rawliteral(
     form { margin-top: 16px; }
     textarea { width: 100%; padding: 12px; font-size: 16px; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: #eee; resize: vertical; min-height: 100px; }
     button { margin-top: 12px; padding: 12px 24px; font-size: 16px; background: #0d6efd; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    button.ripple { background: #7c3aed; margin-left: 12px; }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     .status { margin-top: 12px; font-size: 0.9rem; }
+    .ripple-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #444; }
     .ok { color: #4ade80; }
     .err { color: #f87171; }
   </style>
@@ -111,11 +159,23 @@ const char* htmlPage = R"rawliteral(
     <button type="submit" id="btn">Send</button>
   </form>
   <div class="status" id="status"></div>
+
+  <div class="ripple-section">
+    <p>Send a ripple along the trail (A → B → C → D). Each crumb will light its LED and beep.</p>
+    <form method="POST" action="/ripple" id="rippleForm">
+      <button type="submit" id="rippleBtn" class="ripple">Send Ripple</button>
+    </form>
+  </div>
+
   <script>
     document.getElementById('f').onsubmit = function() {
       document.getElementById('btn').disabled = true;
       document.getElementById('status').textContent = 'Sending…';
       document.getElementById('status').className = 'status';
+    };
+    document.getElementById('rippleForm').onsubmit = function() {
+      document.getElementById('rippleBtn').disabled = true;
+      document.getElementById('rippleBtn').textContent = 'Sending…';
     };
   </script>
 </body>
@@ -152,6 +212,18 @@ void handleSend() {
     "<body><p class='ok'>Message sent. It will relay along the trail.</p><p><a href='/'>Send another</a></p></body></html>");
 }
 
+void handleRipple() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  sendRippleToTrail();
+  server.send(200, "text/html",
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Ripple sent</title><style>body{font-family:system-ui;padding:20px;background:#1a1a1a;color:#eee;} .ok{color:#4ade80;}</style></head>"
+    "<body><p class='ok'>Ripple sent. It will travel A → B → C → D.</p><p><a href='/'>Back</a></p></body></html>");
+}
+
 void handleNotFound() {
   server.send(404, "text/plain", "Not Found");
 }
@@ -160,6 +232,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   // Start AP on channel 6 so ESP-NOW (same channel) works with Crumb_A
   WiFi.mode(WIFI_AP);
@@ -189,6 +262,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/send", HTTP_POST, handleSend);
+  server.on("/ripple", HTTP_POST, handleRipple);
   server.onNotFound(handleNotFound);
   server.begin();
   Serial.println("Web server started. Connect to Breadcrumbs-Pouch and open http://192.168.4.1");
@@ -196,5 +270,15 @@ void setup() {
 
 void loop() {
   server.handleClient();
+
+  // Ripple button: press to send ripple message to A -> B -> C -> D
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    unsigned long now = millis();
+    if ((unsigned long)(now - lastRipplePressMs) >= RIPPLE_DEBOUNCE_MS) {
+      lastRipplePressMs = now;
+      sendRippleToTrail();
+    }
+  }
+
   delay(2);
 }
